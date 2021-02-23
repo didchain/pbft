@@ -21,7 +21,4 @@ different teams of programmers produce different implementations, is another opt
 
 ![](./normal_case_operation.jpg)
 
-![](./pbft-consensus-behavior.jpg)
-![](./view_change.png)
-![](./view_change2.jpg)
-![](./view_change3.jpg)
+![](./pbft--behavior.jpg)
