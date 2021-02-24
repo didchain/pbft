@@ -8,6 +8,7 @@ import (
 type ConMessage struct {
 	Typ     MType  `json:"type"`
 	Sig     string `json:"sig"`
+	From    string `json:"from"`
 	Payload []byte `json:"payload"`
 }
 
@@ -21,6 +22,13 @@ func (cm *ConMessage) String() string {
 		cm.Sig,
 		len(cm.Payload))
 }
+
+func (cm *ConMessage) Verify() bool {
+	//hash := HASH(cm.Payload)
+	//return cm.From == Revert(hash, cm.Sig)
+	return true
+}
+
 func CreateConMsg(t MType, msg interface{}) *ConMessage {
 	data, e := json.Marshal(msg)
 	if e != nil {
@@ -46,6 +54,12 @@ type PrePrepare struct {
 	SequenceID int64  `json:"sequenceID"`
 	Digest     string `json:"digest"`
 }
+
+type NullPre struct {
+	ViewID     int64 `json:"viewID"`
+	SequenceID int64 `json:"sequenceID"`
+}
+
 type PrepareMsg map[int64]*Prepare
 type Prepare struct {
 	ViewID     int64  `json:"viewID"`
@@ -64,59 +78,33 @@ type Commit struct {
 type CheckPoint struct {
 	SequenceID int64  `json:"sequenceID"`
 	Digest     string `json:"digest"`
+	ViewID     int64  `json:"viewID"`
 	NodeID     int64  `json:"nodeID"`
+}
+type PTuple struct {
+	PPMsg *PrePrepare `json:"pre-prepare"`
+	PMsg  PrepareMsg  `json:"prepare"`
 }
 
 type ViewChange struct {
-	NewViewID int64             `json:"newViewID"`
-	LastCPSeq int64             `json:"lastCPSeq"`
-	NodeID    int64             `json:"nodeID"`
-	CMsg      []*CTuple         `json:"cMsg"`
-	PMsg      map[int64]*PTuple `json:"pMsg"`
-	QMsg      map[int64]*QTuple `json:"qMsg"`
+	NewViewID int64                 `json:"newViewID"`
+	LastCPSeq int64                 `json:"lastCPSeq"`
+	NodeID    int64                 `json:"nodeID"`
+	CMsg      map[int64]*CheckPoint `json:"cMsg"`
+	PMsg      map[int64]*PTuple     `json:"pMsg"`
 }
 
 func (vc *ViewChange) Digest() string {
 	return fmt.Sprintf("this is digest for[%d-%d]", vc.NewViewID, vc.LastCPSeq)
 }
 
-type ViewChangeACK struct {
-	NewViewID int64  `json:"newViewID"`
-	NodeI     int64  `json:"nodeI"`
-	NodeJ     int64  `json:"nodeJ"`
-	Digest    string `json:"digest"`
-}
+type OMessage map[int64]*PrePrepare
+type NMessage map[int64]*NullPre
 
-type PTuple struct {
-	ViewID     int64 `json:"viewID"`
-	SequenceID int64 `json:"sequenceID"`
-	NodeID     int64 `json:"nodeID"`
-}
-
-type QTuple struct {
-	ViewID     int64 `json:"viewID"`
-	SequenceID int64 `json:"sequenceID"`
-	NodeID     int64 `json:"nodeID"`
-}
-
-type CTuple struct {
-	SequenceID int64  `json:"sequenceID"`
-	Digest     string `json:"digest"`
-}
-
-type VTuple struct {
-	NodeID int64  `json:"nodeID"`
-	Digest string `json:"digest"`
-}
-
-type XTuple struct {
-	SequenceID       int64             `json:"sequenceID"`
-	Digest           string            `json:"digest"`
-	SelectedRequests map[int64]Request `json:"requests"`
-}
-
+type VMessage map[int64]*ViewChange
 type NewView struct {
-	NewViewID int64     `json:"newViewID"`
-	VMsg      []*VTuple `json:"vMSG"`
-	XMsg      *XTuple   `json:"xMSG"`
+	NewViewID int64    `json:"newViewID"`
+	VMsg      VMessage `json:"vMSG"`
+	OMsg      OMessage `json:"oMSG"`
+	NMsg      NMessage `json:"nMSG"`
 }

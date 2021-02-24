@@ -13,7 +13,6 @@ const (
 	MTCommit
 	MTCheckpoint
 	MTViewChange
-	MTViewChangeACK
 	MTNewView
 )
 const MaxFaultyNode = 1

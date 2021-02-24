@@ -98,6 +98,7 @@ type StateEngine struct {
 	NodeID      int64 `json:"nodeID"`
 	CurViewID   int64 `json:"viewID"`
 	CurSequence int64 `json:"curSeq"`
+	LasExeSeq   int64 `json:"lastExeSeq"`
 	PrimaryID   int64 `json:"primaryID"`
 	nodeStatus  EngineStatus
 
@@ -113,7 +114,7 @@ type StateEngine struct {
 	checks    map[int64]*CheckPoint
 	lastCP    *CheckPoint
 	cliRecord map[string]*ClientRecord
-	sCache    *SCache
+	sCache    *VCCache
 }
 
 func InitConsensus(id int64, cChan chan<- *message.RequestRecord, rChan chan<- *message.Reply) *StateEngine {
@@ -121,7 +122,9 @@ func InitConsensus(id int64, cChan chan<- *message.RequestRecord, rChan chan<- *
 	p2p := p2pnetwork.NewSimpleP2pLib(id, ch)
 	se := &StateEngine{
 		NodeID:          id,
-		CurViewID:       2000,
+		CurViewID:       0,
+		CurSequence:     0,
+		LasExeSeq:       0,
 		MiniSeq:         0,
 		MaxSeq:          0 + CheckPointK,
 		Timer:           newRequestTimer(),
@@ -132,7 +135,7 @@ func InitConsensus(id int64, cChan chan<- *message.RequestRecord, rChan chan<- *
 		msgLogs:         make(map[int64]*NormalLog),
 		checks:          make(map[int64]*CheckPoint),
 		cliRecord:       make(map[string]*ClientRecord),
-		sCache:          NewViewChangeCache(),
+		sCache:          NewVCCache(),
 	}
 	se.PrimaryID = se.CurViewID % message.TotalNodeNO
 	return se
@@ -269,6 +272,7 @@ func (s *StateEngine) rawRequest(request *message.Request) (err error) {
 	log := s.getOrCreateLog(request.SeqID)
 	log.clientID = request.ClientID
 	client.saveRequest(request)
+	s.Timer.tick()
 	return nil
 }
 
@@ -310,7 +314,6 @@ func (s *StateEngine) idle2PrePrepare(ppMsg *message.PrePrepare) (err error) {
 			return
 		}
 	}
-	s.Timer.tick()
 	prepare := &message.Prepare{
 		ViewID:     s.CurViewID,
 		SequenceID: ppMsg.SequenceID,
@@ -456,6 +459,7 @@ func (s *StateEngine) prepare2Commit(commit *message.Commit) (err error) {
 	s.Timer.tack()
 	fmt.Printf("======>[prepare2Commit] Consensus status is [%s] seq=%d and timer stop\n", log.Stage, commit.SequenceID)
 
+	//TODO::should execute request with smallest  sequence no, current committed sequence may not be the smallest one.
 	request, ok := s.cliRecord[log.clientID].Request[commit.SequenceID]
 	if !ok {
 		return fmt.Errorf("no raw request for such seq[%d]", commit.SequenceID)
@@ -522,13 +526,6 @@ func (s *StateEngine) procManageMsg(msg *message.ConMessage) (err error) {
 			return fmt.Errorf("======>[procConsensusMsg] invalid[%s]ViewChange message[%s]\n", err, msg)
 		}
 		return s.procViewChange(vc)
-
-	case message.MTViewChangeACK:
-		ack := &message.ViewChangeACK{}
-		if err := json.Unmarshal(msg.Payload, ack); err != nil {
-			return fmt.Errorf("======>[procConsensusMsg] invalid[%s]ViewChange message[%s]\n", err, msg)
-		}
-		return s.procVCAck(ack)
 
 	case message.MTNewView:
 		vc := &message.ViewChange{}

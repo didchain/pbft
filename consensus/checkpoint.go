@@ -47,6 +47,8 @@ func NewCheckPoint(sq, vi int64) *CheckPoint {
 
 func (s *StateEngine) ResetState(reply *message.Reply) {
 	s.msgLogs[reply.SeqID].Stage = Idle
+	s.LasExeSeq = reply.SeqID
+
 	if s.CurSequence%CheckPointInterval == 0 {
 		fmt.Printf("======>[ResetState]Need to create check points(%d)\n", s.CurSequence)
 		go s.createCheckPoint(s.CurSequence)
@@ -58,6 +60,7 @@ func (s *StateEngine) createCheckPoint(sequence int64) {
 	msg := &message.CheckPoint{
 		SequenceID: sequence,
 		NodeID:     s.NodeID,
+		ViewID:     s.CurViewID,
 		Digest:     fmt.Sprintf("checkpoint message for [seq(%d)]", sequence),
 	}
 
@@ -75,21 +78,29 @@ func (s *StateEngine) createCheckPoint(sequence int64) {
 }
 
 func (s *StateEngine) checkingPoint(msg *message.CheckPoint) error {
-
 	cp, ok := s.checks[msg.SequenceID]
 	if !ok {
 		cp = NewCheckPoint(msg.SequenceID, s.CurViewID)
 		s.checks[msg.SequenceID] = cp
 	}
 	cp.CPMsg[msg.NodeID] = msg
+	s.runCheckPoint(msg.SequenceID)
+	return nil
+}
 
+func (s *StateEngine) runCheckPoint(seq int64) {
+	cp, ok := s.checks[seq]
+	if !ok {
+		return
+
+	}
 	if len(cp.CPMsg) < 2*message.MaxFaultyNode+1 {
 		fmt.Printf("======>[checkingPoint] message counter:[%d]\n", len(cp.CPMsg))
-		return nil
+		return
 	}
 	if cp.IsStable {
 		fmt.Printf("======>[checkingPoint] Check Point for [%d] has confirmed\n", cp.Seq)
-		return nil
+		return
 	}
 
 	fmt.Println("======>[checkingPoint] Start to clean the old message data......")
@@ -117,5 +128,4 @@ func (s *StateEngine) checkingPoint(msg *message.CheckPoint) error {
 	s.MaxSeq = s.MiniSeq + CheckPointK
 	s.lastCP = cp
 	fmt.Printf("======>[checkingPoint] Success in Checkpoint forwarding[(%d, %d)]......\n", s.MiniSeq, s.MaxSeq)
-	return nil
 }

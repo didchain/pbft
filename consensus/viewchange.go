@@ -5,97 +5,31 @@ import (
 	"github.com/didchain/PBFT/message"
 )
 
-type SCache struct {
-	items       map[int64]*SCacheItem
-	ConfirmedVC map[int64]*message.ViewChange
+type VCCache struct {
+	vcMsg message.VMessage
+	nvMsg map[int64]*message.NewView
 }
 
-type SCacheItem struct {
-	isConfirmed bool
-	ACKs        map[int64]*message.ViewChangeACK
-	ViewChange  *message.ViewChange
-}
-
-func (c SCache) pushVC(vc *message.ViewChange) {
-	_, ok := c.items[vc.NodeID]
-	if ok {
-		return
+func NewVCCache() *VCCache {
+	return &VCCache{
+		vcMsg: make(message.VMessage),
+		nvMsg: make(map[int64]*message.NewView),
 	}
-	item := NewSCacheItem()
-	item.ViewChange = vc
-	item.isConfirmed = false
-	c.items[vc.NodeID] = item
 }
 
-func (c SCache) pushACK(ack *message.ViewChangeACK) bool {
-	item, ok := c.items[ack.NodeI]
-	if !ok {
-		return false
+func (vcc *VCCache) pushVC(vc *message.ViewChange) {
+	vcc.vcMsg[vc.NodeID] = vc
+}
+
+func (vcc *VCCache) hasNewViewYet(vid int64) bool {
+	if _, ok := vcc.nvMsg[vid]; ok {
+		return true
 	}
-
-	item.ACKs[ack.NodeJ] = ack
-	if len(item.ACKs) < 2*message.MaxFaultyNode-1 || item.isConfirmed {
-		return false
-	}
-
-	item.isConfirmed = true
-	c.ConfirmedVC[item.ViewChange.NodeID] = item.ViewChange
-
-	c.decideRequest()
-	return c.fullFillSlot()
-}
-
-func (c SCache) findViceS() {
-}
-func (c SCache) findS() {
-}
-func (c SCache) createRequestForAllSlot() {
-	//TODO:: condition A1, A2, B
-}
-func (c SCache) decideRequest() {
-	c.findViceS()
-	if len(c.ConfirmedVC) <= 2*message.MaxFaultyNode {
-		return
-	}
-	c.findS()
-	c.createRequestForAllSlot()
-}
-
-func (c SCache) fullFillSlot() bool {
 	return false
 }
 
-func (c SCache) originalVC() []*message.VTuple {
-	vcs := make([]*message.VTuple, 0)
-	for id, vc := range c.ConfirmedVC {
-		tuple := &message.VTuple{
-			NodeID: id,
-			Digest: vc.Digest(),
-		}
-		vcs = append(vcs, tuple)
-	}
-
-	return vcs
-}
-
-func (c SCache) decision() *message.XTuple {
-	//TODO:: use merkel tree
-	return nil
-}
-
-func NewViewChangeCache() *SCache {
-	sc := &SCache{
-		items:       make(map[int64]*SCacheItem),
-		ConfirmedVC: make(map[int64]*message.ViewChange),
-	}
-	return sc
-}
-
-func NewSCacheItem() *SCacheItem {
-	vcc := &SCacheItem{
-		ACKs: make(map[int64]*message.ViewChangeACK),
-	}
-	return vcc
+func (vcc *VCCache) addNewView(nv *message.NewView) {
+	vcc.nvMsg[nv.NewViewID] = nv
 }
 
 /*
@@ -129,43 +63,22 @@ has sent a PRE-PREPARE or PREPARE message). Its entries are tuples ⟨n, d , v�
 with digest d with number n in view v and that request did not pre-prepare at i in a later view with the same number.
 */
 
-func (s *StateEngine) computeCMsg() []*message.CTuple {
-	ct := make([]*message.CTuple, 0)
-	for n, cp := range s.checks {
-		ct = append(ct, &message.CTuple{
-			SequenceID: n,
-			Digest:     cp.Digest,
-		})
-	}
-	return ct
-}
-
-func (s *StateEngine) computePMsg() (map[int64]*message.PTuple, map[int64]*message.QTuple) {
+func (s *StateEngine) computePMsg() map[int64]*message.PTuple {
 	P := make(map[int64]*message.PTuple)
-	Q := make(map[int64]*message.QTuple)
-
 	for seq := s.MiniSeq; seq < s.MaxSeq; seq++ {
 		log, ok := s.msgLogs[seq]
-		if !ok || log.Stage == Idle {
+		if !ok || log.Stage < Prepared {
 			continue
 		}
 
-		Q[seq] = &message.QTuple{
-			ViewID:     s.CurViewID,
-			SequenceID: seq,
-			NodeID:     s.NodeID,
+		tuple := &message.PTuple{
+			PPMsg: log.PrePrepare,
+			PMsg:  log.Prepare,
 		}
-
-		if log.Stage >= Prepared {
-			P[seq] = &message.PTuple{
-				ViewID:     s.CurViewID,
-				SequenceID: seq,
-				NodeID:     s.NodeID,
-			}
-		}
+		P[seq] = tuple
 	}
 
-	return P, Q
+	return P
 }
 
 /*
@@ -186,21 +99,19 @@ func (s *StateEngine) ViewChange() {
 	s.nodeStatus = ViewChanging
 	s.Timer.tack()
 
-	cMsg := s.computeCMsg()
-	pMsg, qMsg := s.computePMsg()
+	pMsg := s.computePMsg()
 
 	vc := &message.ViewChange{
 		NewViewID: s.CurViewID + 1,
 		LastCPSeq: s.lastCP.Seq,
 		NodeID:    s.NodeID,
-		CMsg:      cMsg,
+		CMsg:      s.lastCP.CPMsg,
 		PMsg:      pMsg,
-		QMsg:      qMsg,
 	}
 
 	nextPrimaryID := vc.NewViewID % message.TotalNodeNO
 	if s.NodeID == nextPrimaryID {
-		s.sCache.pushVC(vc)
+		s.sCache.pushVC(vc) //[vc.NodeID] = vc
 	}
 
 	consMsg := message.CreateConMsg(message.MTViewChange, vc)
@@ -221,39 +132,116 @@ sender, d is the digest of the VIEW-CHANGE message being acknowledged, and j is 
 message. These acknowledgments allow the primary to prove authenticity of VIEW-CHANGE messages sent by faulty replicas.
 */
 
-func (s *StateEngine) procViewChange(vc *message.ViewChange) error {
+type Set map[interface{}]bool
 
-	if s.CurViewID+1 != vc.NewViewID {
+func (s Set) put(key interface{}) {
+	s[key] = true
+}
+func (s *StateEngine) checkViewChange(vc *message.ViewChange) error {
+	if s.CurViewID > vc.NewViewID {
 		return fmt.Errorf("it's[%d] not for me[%d] view change", vc.NewViewID, s.CurViewID)
 	}
-	for _, pMsg := range vc.PMsg {
-		if pMsg.ViewID > s.CurViewID {
-			return fmt.Errorf("P message[%d] is larger than me[%d] in view id", pMsg.ViewID, s.CurViewID)
+	if len(vc.CMsg) <= message.MaxFaultyNode {
+		return fmt.Errorf("view message checking C message failed")
+	}
+	var counter = make(map[int64]Set)
+	for id, cp := range vc.CMsg {
+		if cp.ViewID >= vc.NewViewID {
+			continue
+		}
+
+		if cp.SequenceID != vc.LastCPSeq {
+			return fmt.Errorf("view change message C msg's n[]%d is different from vc's"+
+				" h[%d]", cp.SequenceID, vc.LastCPSeq)
+		}
+
+		//TODO:: digest test
+		//if cp.Digest != message.Digest(vc.LastCPSeq){
+		//
+		//}
+
+		if counter[cp.ViewID] == nil {
+			counter[cp.ViewID] = make(Set)
+		}
+
+		counter[cp.ViewID].put(id)
+	}
+
+	CMsgIsOK := false
+	for vid, set := range counter {
+		if len(set) > message.MaxFaultyNode {
+			fmt.Printf("view change check C message success[%d]:\n", vid)
+			CMsgIsOK = true
+			break
 		}
 	}
-	for _, qMsg := range vc.QMsg {
-		if qMsg.ViewID > s.CurViewID {
-			return fmt.Errorf("Q message[%d] is larger than me[%d] in view id", qMsg.ViewID, s.CurViewID)
+	if !CMsgIsOK {
+		return fmt.Errorf("no valid C message in view change msg")
+	}
+
+	counter = make(map[int64]Set)
+	for seq, pt := range vc.PMsg {
+
+		ppView := pt.PPMsg.ViewID
+		//prePrimaryID :=  ppView % message.TotalNodeNO
+
+		if seq <= vc.LastCPSeq || seq > vc.LastCPSeq+CheckPointK {
+			return fmt.Errorf("view change message checking P message faild pre-prepare n=%d,"+
+				" checkpoint h=%d", seq, vc.LastCPSeq)
+		}
+		if ppView >= vc.NewViewID {
+			return fmt.Errorf("view change message checking P message faild pre-prepare view=%d,"+
+				" new view id=%d", pt.PPMsg.ViewID, vc.NewViewID)
+		}
+
+		for nid, prepare := range pt.PMsg {
+			if ppView != prepare.ViewID {
+				return fmt.Errorf("view change message checking view id[%d] in pre-prepare is not "+
+					"same as prepare's[%d]", ppView, prepare.ViewID)
+			}
+			if seq != prepare.SequenceID {
+				return fmt.Errorf("view change message checking seq id[%d] in pre-prepare"+
+					"is different from prepare's[%d]", seq, prepare.SequenceID)
+			}
+			counter[ppView].put(nid)
 		}
 	}
+
+	PMsgIsOk := false
+	for vid, set := range counter {
+		if len(set) >= 2*message.MaxFaultyNode {
+			fmt.Printf("view change check P message success[%d]:\n", vid)
+			PMsgIsOk = true
+			break
+		}
+	}
+	if !PMsgIsOk {
+		return fmt.Errorf("view change check p message failed")
+	}
+
+	return nil
+}
+
+func (s *StateEngine) procViewChange(vc *message.ViewChange) error {
 	nextPrimaryID := vc.NewViewID % message.TotalNodeNO
-	if s.NodeID == nextPrimaryID {
-		s.sCache.pushVC(vc)
+	if s.NodeID != nextPrimaryID {
+		fmt.Printf("im[%d] not the new[%d] primary node\n", s.NodeID, nextPrimaryID)
+		return nil
 	}
-
-	ack := &message.ViewChangeACK{
-		NewViewID: vc.NewViewID,
-		NodeI:     s.NodeID,
-		NodeJ:     vc.NodeID,
-		Digest:    fmt.Sprintf("digest for view[%d] change", vc.NewViewID),
-	}
-
-	consMsg := message.CreateConMsg(message.MTViewChangeACK, ack)
-	if err := s.p2pWire.SendToNode(nextPrimaryID, consMsg); err != nil {
+	if err := s.checkViewChange(vc); err != nil {
 		return err
 	}
-	s.sCache.pushACK(ack)
-	return nil
+
+	s.sCache.pushVC(vc)
+	if len(s.sCache.vcMsg) < message.MaxFaultyNode*2 {
+		return nil
+	}
+	if s.sCache.hasNewViewYet(vc.NewViewID) {
+		fmt.Printf("view change[%d] is in processing......\n", vc.NewViewID)
+		return nil
+	}
+
+	return s.createNewViewMsg(vc.NewViewID)
 }
 
 /*
@@ -287,32 +275,68 @@ to the other replicas with its decision: ⟨NEW-VIEW, v + 1, V , X ⟩α p . Her
 consisting of the identifier of the sending replica and the digest of its VIEW-CHANGE message, and X identifies the
 checkpoint and request values selected. The VIEW-CHANGEs in V are the new-view certificate.
 */
-func (s *StateEngine) procVCAck(ack *message.ViewChangeACK) error {
-	nextPrimaryID := ack.NewViewID % message.TotalNodeNO
-	if s.NodeID != nextPrimaryID {
-		return nil
+
+func (s *StateEngine) GetON(newVID int64) (int64, int64, message.OMessage, message.NMessage, *message.ViewChange) {
+	mergeP := make(map[int64]*message.PTuple)
+	var maxNinV int64 = 0
+	var maxNinO int64 = 0
+
+	var cpVC *message.ViewChange = nil
+	for _, vc := range s.sCache.vcMsg {
+		if vc.LastCPSeq > maxNinV {
+			maxNinV = vc.LastCPSeq
+			cpVC = vc
+		}
+		for seq, pMsg := range vc.PMsg {
+			if _, ok := mergeP[seq]; ok {
+				continue
+			}
+			mergeP[seq] = pMsg
+			if seq > maxNinO {
+				maxNinO = seq
+			}
+		}
 	}
 
-	if isFullSlot := s.sCache.pushACK(ack); !isFullSlot {
-		return nil
+	O := make(message.OMessage)
+	N := make(message.NMessage)
+	for i := maxNinV + 1; i <= maxNinO; i++ {
+		pt, ok := mergeP[i]
+		if ok {
+			O[i] = pt.PPMsg
+			O[i].ViewID = newVID
+		} else {
+			N[i] = &message.NullPre{
+				ViewID:     newVID,
+				SequenceID: i,
+			}
+		}
 	}
-	s.createNewViewMsg()
-	return nil
+
+	return maxNinV, maxNinO, O, N, cpVC
 }
 
-func (s *StateEngine) createNewViewMsg() error {
+func (s *StateEngine) createNewViewMsg(newVID int64) error {
 
-	s.CurViewID++
+	s.CurViewID = newVID
+	newCP, newSeq, o, n, cpVC := s.GetON(newVID)
 	nv := &message.NewView{
 		NewViewID: s.CurViewID,
-		VMsg:      s.sCache.originalVC(),
-		XMsg:      s.sCache.decision(),
+		VMsg:      s.sCache.vcMsg,
+		OMsg:      o,
+		NMsg:      n,
 	}
+
+	s.sCache.addNewView(nv)
+
+	s.CurSequence = newSeq
+
 	msg := message.CreateConMsg(message.MTNewView, nv)
 	if err := s.p2pWire.BroadCast(msg); err != nil {
 		return err
 	}
-	s.updatePrimaryToNewView()
+	s.updateStateNV(newCP, cpVC)
+	s.cleanRequest()
 	return nil
 }
 
@@ -324,11 +348,11 @@ to fetch the missing state (see Section 6.2.2). When it has all requests in X an
 h is stable, it records in its log that the requests are pre-prepared in view v + 1.
 	The backups for view v + 1 collect messages until they have a correct NEW-VIEW message and a correct matching
 VIEW-CHANGE message for each pair in V. If a backup did not receive one of the VIEW-CHANGE messages for some replica
-with a pair in V, the primary alone may be unable to prove that the message it re- ceived is authentic because it is
+with a pair in V, the primary alone may be unable to prove that the message it received is authentic because it is
 not signed. The use of VIEW-CHANGE-ACK messages solves this problem. Since the primary only includes a VIEW-CHANGE
-message in S after obtaining a matching view-change certificate, at least f + 1 nonfaulty replicas can vouch for the
+message in S after obtaining a matching view-change certificate, at least f + 1 non-faulty replicas can vouch for the
 authenticity of every VIEW-CHANGE message whose di- gest is in V. Therefore, if the original sender of a VIEW-CHANGE is
-uncooperative, the primary retransmits that sender’s VIEW-CHANGE message and the nonfaulty backups retransmit their
+uncooperative, the primary retransmits that sender’s VIEW-CHANGE message and the non-faulty backups retransmit their
 VIEW-CHANGE-ACKs. A backup can accept a VIEW-CHANGE message whose authenticator is incorrect if it receives f
 VIEW-CHANGE-ACKs that match the digest and identifier in V.
 	After obtaining the NEW-VIEW message and the matching VIEW-CHANGE mes- sages, the backups check if these
@@ -337,12 +361,39 @@ not, the replicas move immediately to view v + 2. Otherwise, they modify their s
 in a way similar to the primary. The only difference is that they multicast a PREPARE message for v + 1 for each request
 they mark as pre-prepared. Thereafter, normal case operation resumes.
 */
-func (s *StateEngine) updatePrimaryToNewView() {
+
+func (s *StateEngine) updateStateNV(maxNV int64, vc *message.ViewChange) {
+
+	if maxNV > s.lastCP.Seq {
+		cp := NewCheckPoint(maxNV, s.CurViewID)
+		cp.CPMsg = vc.CMsg
+		s.checks[maxNV] = cp
+		s.runCheckPoint(maxNV)
+
+		s.createCheckPoint(maxNV)
+	}
+
+	if maxNV > s.LasExeSeq {
+		//TODO:: last reply last reply time
+		s.LasExeSeq = maxNV
+	}
+
+	return
+}
+
+func (s *StateEngine) cleanRequest() {
+	for cid, client := range s.cliRecord {
+		for seq, req := range client.Request {
+			if req.TimeStamp < client.LastReplyTime {
+				delete(client.Request, seq)
+				fmt.Printf("cleaning request[%d] when view changed for client[%s]\n", seq, cid)
+			}
+		}
+	}
 	return
 }
 
 func (s *StateEngine) didChangeView(vc *message.ViewChange) error {
 	//TODO::check the vc message
-
 	return nil
 }
