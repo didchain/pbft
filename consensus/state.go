@@ -528,7 +528,7 @@ func (s *StateEngine) procManageMsg(msg *message.ConMessage) (err error) {
 		return s.procViewChange(vc)
 
 	case message.MTNewView:
-		vc := &message.ViewChange{}
+		vc := &message.NewView{}
 		if err := json.Unmarshal(msg.Payload, vc); err != nil {
 			return fmt.Errorf("======>[procConsensusMsg] invalid[%s] didiViewChange message[%s]\n", err, msg)
 		}

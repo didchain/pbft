@@ -276,7 +276,7 @@ consisting of the identifier of the sending replica and the digest of its VIEW-C
 checkpoint and request values selected. The VIEW-CHANGEs in V are the new-view certificate.
 */
 
-func (s *StateEngine) GetON(newVID int64) (int64, int64, message.OMessage, message.NMessage, *message.ViewChange) {
+func (s *StateEngine) GetON(newVID int64) (int64, int64, message.OMessage, message.OMessage, *message.ViewChange) {
 	mergeP := make(map[int64]*message.PTuple)
 	var maxNinV int64 = 0
 	var maxNinO int64 = 0
@@ -299,16 +299,17 @@ func (s *StateEngine) GetON(newVID int64) (int64, int64, message.OMessage, messa
 	}
 
 	O := make(message.OMessage)
-	N := make(message.NMessage)
+	N := make(message.OMessage)
 	for i := maxNinV + 1; i <= maxNinO; i++ {
 		pt, ok := mergeP[i]
 		if ok {
 			O[i] = pt.PPMsg
 			O[i].ViewID = newVID
 		} else {
-			N[i] = &message.NullPre{
+			N[i] = &message.PrePrepare{
 				ViewID:     newVID,
 				SequenceID: i,
+				Digest:     nil,
 			}
 		}
 	}
@@ -393,7 +394,33 @@ func (s *StateEngine) cleanRequest() {
 	return
 }
 
-func (s *StateEngine) didChangeView(vc *message.ViewChange) error {
-	//TODO::check the vc message
+func (s *StateEngine) didChangeView(nv *message.NewView) error {
+
+	newVID := nv.NewViewID
+	s.sCache.vcMsg = nv.VMsg
+	newCP, newSeq, O, N, cpVC := s.GetON(newVID)
+	if !O.EQ(nv.OMsg) {
+		return fmt.Errorf("new view checking O message faliled")
+	}
+	if !N.EQ(nv.NMsg) {
+		return fmt.Errorf("new view checking N message faliled")
+	}
+
+	for _, ppMsg := range O {
+		if e := s.idle2PrePrepare(ppMsg); e != nil {
+			return e
+		}
+	}
+
+	for _, ppMsg := range N {
+		if e := s.idle2PrePrepare(ppMsg); e != nil {
+			return e
+		}
+	}
+
+	s.sCache.addNewView(nv)
+	s.CurSequence = newSeq
+	s.updateStateNV(newCP, cpVC)
+	s.cleanRequest()
 	return nil
 }

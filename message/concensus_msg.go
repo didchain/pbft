@@ -55,11 +55,6 @@ type PrePrepare struct {
 	Digest     string `json:"digest"`
 }
 
-type NullPre struct {
-	ViewID     int64 `json:"viewID"`
-	SequenceID int64 `json:"sequenceID"`
-}
-
 type PrepareMsg map[int64]*Prepare
 type Prepare struct {
 	ViewID     int64  `json:"viewID"`
@@ -99,12 +94,16 @@ func (vc *ViewChange) Digest() string {
 }
 
 type OMessage map[int64]*PrePrepare
-type NMessage map[int64]*NullPre
+
+func (m OMessage) EQ(msg OMessage) bool {
+	//return HASH(m) == HASH(msg)
+	return true
+}
 
 type VMessage map[int64]*ViewChange
 type NewView struct {
 	NewViewID int64    `json:"newViewID"`
 	VMsg      VMessage `json:"vMSG"`
 	OMsg      OMessage `json:"oMSG"`
-	NMsg      NMessage `json:"nMSG"`
+	NMsg      OMessage `json:"nMSG"`
 }
